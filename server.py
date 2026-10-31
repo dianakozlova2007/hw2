@@ -3,6 +3,7 @@ from dns_methods import unpack_dns_recv, build_dns_response
 
 from constants import SERVER_IP, PORT, NOERROR_CODE
 from dns_resolver import resolve
+from multiply_methods import multiply_result
 
 
 def handle_request(data: bytes) -> bytes | None:
@@ -15,7 +16,9 @@ def handle_request(data: bytes) -> bytes | None:
         return None
 
     try:
-        result = resolve(question["name"], question["type"])
+        result = multiply_result(question)
+        if result is None:
+            result = resolve(question["name"], question["type"])
     except Exception:
         result = None
 
@@ -24,8 +27,7 @@ def handle_request(data: bytes) -> bytes | None:
 
     try:
         return build_dns_response(
-            query_id, rd, question, result["rcode"], result["records"]
-        )
+            query_id, rd, question, result["rcode"], result["records"])
     except Exception:
         return build_dns_response(query_id, rd, question, NOERROR_CODE, [])
 
