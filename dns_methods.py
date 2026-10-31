@@ -2,6 +2,10 @@ import struct
 import socket
 
 from constants import (
+    A_CODE,
+    NS_CODE,
+    CNAME_CODE,
+    QTYPE,
     ID,
     FLAGS,
     QDCOUNT,
@@ -9,25 +13,36 @@ from constants import (
     NSCOUNT,
     ARCOUNT,
     QCLASS,
-    A_CODE,
-    NS_CODE,
-    CNAME_CODE,
 )
 
 
-def build_dns_req(address: str, qtype: int = A_CODE) -> bytes:
-    header = struct.pack("!6H", ID, FLAGS, QDCOUNT, ANCOUNT, NSCOUNT, ARCOUNT)
+def pack_name(domain: str) -> bytes:
     qname = b""
+    for label in domain.rstrip(".").split("."):
+        if label:
+            qname += bytes([len(label)]) + label.encode()
 
-    for label in address.rstrip(".").split("."):
-        qname += bytes([len(label)]) + label.encode()
-
-    qname += b"\x00"
-    question = qname + struct.pack(">HH", qtype, QCLASS)
-    return header + question
+    return qname + b"\x00"
 
 
-def read_name(data, offset):
+def pack_record(record: dict) -> bytes | None:
+    rtype = record["type"]
+
+    if rtype == A_CODE:
+        rdata = socket.inet_aton(record["rdata"])
+    elif rtype in (NS_CODE, CNAME_CODE):
+        rdata = pack_name(record["rdata"])
+    else:
+        return None
+
+    return (
+        pack_name(record["name"])
+        + struct.pack("!HHIH", rtype, record["class"], record["ttl"], len(rdata))
+        + rdata
+    )
+
+
+def read_name(data, offset: int):
     length = data[offset]
 
     if length == 0:
@@ -43,7 +58,7 @@ def read_name(data, offset):
     return (label + "." + rest if rest else label), end
 
 
-def read_record(data, offset):
+def read_record(data, offset: int):
     name, offset = read_name(data, offset)
     rtype, rclass, ttl, rdlength = struct.unpack_from("!HHIH", data, offset)
     offset += 10
@@ -59,17 +74,40 @@ def read_record(data, offset):
     return record, offset + rdlength
 
 
+def build_flags(rd: int, rcode: int) -> int:
+    qr = 1
+    ra = 1
+    return (qr << 15) | (rd << 8) | (ra << 7) | rcode
+
+
+def build_dns_response(id: int, rd: int, question: dict, rcode: int, records) -> bytes:
+    packed = [pack_record(record) for record in records]
+    packed = [item for item in packed if item is not None]
+
+    header = struct.pack("!6H", id, build_flags(rd, rcode), 1, len(packed), 0, 0)
+    question_bytes = pack_name(question["name"]) + struct.pack("!HH", question["type"], question["class"])
+    return header + question_bytes + b"".join(packed)
+
+
+def build_dns_req(address: str, qtype: int = QTYPE) -> bytes:
+    header = struct.pack("!6H", ID, FLAGS, QDCOUNT, ANCOUNT, NSCOUNT, ARCOUNT)
+    question = pack_name(address) + struct.pack("!HH", qtype, QCLASS)
+    return header + question
+
+
 def unpack_dns_recv(data: bytes):
-    id_, flags, qdcount, ancount, nscount, arcount = struct.unpack("!6H", data[:12])
+    id, flags, qdcount, ancount, nscount, arcount = struct.unpack("!6H", data[:12])
 
     rcode = flags & 0xF
     aa = flags & (1 << 10)
+    rd = (flags >> 8) & 1
     offset = 12
 
     header = {
-        "id": id_,
+        "id": id,
         "rcode": rcode,
         "aa": aa,
+        "rd": rd,
         "qdcount": qdcount,
         "ancount": ancount,
         "nscount": nscount,
