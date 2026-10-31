@@ -13,6 +13,9 @@ from constants import (
     NSCOUNT,
     ARCOUNT,
     QCLASS,
+    AAAA_CODE,
+    MX_CODE,
+    TXT_CODE,
 )
 
 
@@ -30,8 +33,15 @@ def pack_record(record: dict) -> bytes | None:
 
     if rtype == A_CODE:
         rdata = socket.inet_aton(record["rdata"])
+    elif rtype == AAAA_CODE:
+        rdata = socket.inet_pton(socket.AF_INET6, record["rdata"])
     elif rtype in (NS_CODE, CNAME_CODE):
         rdata = pack_name(record["rdata"])
+    elif rtype == MX_CODE:
+        preference, exchange = record["rdata"]
+        rdata = struct.pack("!H", preference) + pack_name(exchange)
+    elif rtype == TXT_CODE:
+        rdata = b"".join(bytes([len(s)]) + s for s in record["rdata"])
     else:
         return None
 
@@ -62,11 +72,25 @@ def read_record(data, offset: int):
     name, offset = read_name(data, offset)
     rtype, rclass, ttl, rdlength = struct.unpack_from("!HHIH", data, offset)
     offset += 10
+    end = offset + rdlength
 
     if rtype == A_CODE:
         rdata = socket.inet_ntop(socket.AF_INET, data[offset : offset + 4])
+    elif rtype == AAAA_CODE:
+        rdata = socket.inet_ntop(socket.AF_INET6, data[offset:end])
     elif rtype in (NS_CODE, CNAME_CODE):
         rdata, _ = read_name(data, offset)
+    elif rtype == MX_CODE:
+        preference = struct.unpack_from("!H", data, offset)[0]
+        exchange, _ = read_name(data, offset + 2)
+        rdata = (preference, exchange)
+    elif rtype == TXT_CODE:
+        rdata = []
+        pos = offset
+        while pos < end:
+            length = data[pos]
+            rdata.append(data[pos + 1 : pos + 1 + length])
+            pos += 1 + length
     else:
         rdata = data[offset : offset + rdlength]
 
